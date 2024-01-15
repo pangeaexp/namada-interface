@@ -45,7 +45,7 @@ Enter BIP39 passphrase (empty for none):
 Successfully added a key and an address with alias: "pangeaexp"
 
 export VALIDATOR_ALIAS="pangeaval"
-export EMAIL="magnus555@gmail.com"
+export EMAIL="zeronet@nunet.net"
 
  namada client init-validator \
   --alias $VALIDATOR_ALIAS \
