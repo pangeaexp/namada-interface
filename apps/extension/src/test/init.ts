@@ -31,6 +31,7 @@ import {
   init as initApprovals,
 } from "../background/approvals";
 
+import { ChainsService } from "background/chains";
 import { LedgerService } from "background/ledger";
 import { SdkService } from "background/sdk";
 import { Namada } from "provider";
@@ -42,7 +43,7 @@ const cryptoMemory = require("@namada/crypto").__wasm.memory;
 export class KVStoreMock<T> implements KVStore<T> {
   private storage: { [key: string]: T | null } = {};
 
-  constructor(readonly _prefix: string) { }
+  constructor(readonly _prefix: string) {}
 
   get<U extends T>(key: string): Promise<U | undefined> {
     return new Promise((resolve) => {
@@ -86,6 +87,7 @@ export const init = async (): Promise<{
   const namadaRouterId = await getNamadaRouterId(extStore);
   const requester = new ExtensionRequester(messenger, namadaRouterId);
   const txStore = new KVStoreMock<TxStore>(KVPrefix.LocalStorage);
+  const dataStore = new KVStoreMock<string>(KVPrefix.LocalStorage);
   const chainStore = new KVStoreMock<Chain>(KVPrefix.LocalStorage);
   const broadcaster = new ExtensionBroadcaster(connectedTabsStore, requester);
 
@@ -106,7 +108,8 @@ export const init = async (): Promise<{
     sessionStore,
     cryptoMemory
   );
-  const sdkService = new SdkService(chainStore);
+  const chainsService = new ChainsService(chainStore, broadcaster);
+  const sdkService = new SdkService(chainsService);
 
   const keyRingService = new KeyRingService(
     vaultService,
@@ -132,6 +135,7 @@ export const init = async (): Promise<{
 
   const approvalsService = new ApprovalsService(
     txStore,
+    dataStore,
     connectedTabsStore,
     approvedOriginsStore,
     keyRingService,

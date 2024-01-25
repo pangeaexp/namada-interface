@@ -50,6 +50,7 @@ const revealedPKStore = new ExtensionKVStore(KVPrefix.RevealedPK, {
   set: browser.storage.local.set,
 });
 const txStore = new MemoryKVStore(KVPrefix.Memory);
+const dataStore = new MemoryKVStore(KVPrefix.Memory);
 
 const messenger = new ExtensionMessenger();
 const router = new ExtensionRouter(
@@ -82,8 +83,8 @@ const init = new Promise<void>(async (resolve) => {
     cryptoMemory,
     broadcaster
   );
-  const sdkService = new SdkService(chainStore);
   const chainsService = new ChainsService(chainStore, broadcaster);
+  const sdkService = new SdkService(chainsService);
   const keyRingService = new KeyRingService(
     vaultService,
     sdkService,
@@ -106,6 +107,7 @@ const init = new Promise<void>(async (resolve) => {
   );
   const approvalsService = new ApprovalsService(
     txStore,
+    dataStore,
     connectedTabsStore,
     approvedOriginsStore,
     keyRingService,

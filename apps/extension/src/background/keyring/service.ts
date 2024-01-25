@@ -3,7 +3,12 @@ import { fromBase64, fromHex } from "@cosmjs/encoding";
 import { PhraseSize } from "@namada/crypto";
 import { public_key_to_bech32, Sdk, TxType } from "@namada/shared";
 import { IndexedDBKVStore, KVStore } from "@namada/storage";
-import { AccountType, Bip44Path, DerivedAccount } from "@namada/types";
+import {
+  AccountType,
+  Bip44Path,
+  DerivedAccount,
+  SignatureResponse,
+} from "@namada/types";
 import { Result, truncateInMiddle } from "@namada/utils";
 
 import {
@@ -254,6 +259,7 @@ export class KeyRingService {
   ): Promise<void> {
     const offscreenDocumentPath = "offscreen.html";
     const routerId = await getNamadaRouterId(this.extensionStore);
+    const rpc = await this.sdkService.getRpc();
 
     if (!(await hasOffscreenDocument(offscreenDocumentPath))) {
       await createOffscreenWithTxWorker(offscreenDocumentPath);
@@ -263,7 +269,7 @@ export class KeyRingService {
       type: SUBMIT_TRANSFER_MSG_TYPE,
       target: OFFSCREEN_TARGET,
       routerId,
-      data: { transferMsg, txMsg, msgId, signingKey },
+      data: { transferMsg, txMsg, msgId, signingKey, rpc },
     });
 
     if (result?.error) {
@@ -279,12 +285,14 @@ export class KeyRingService {
     msgId: string,
     signingKey: SigningKey
   ): Promise<void> {
+    const rpc = await this.sdkService.getRpc();
     initSubmitTransferWebWorker(
       {
         transferMsg,
         txMsg,
         msgId,
         signingKey,
+        rpc,
       },
       this.handleTransferCompleted.bind(this)
     );
@@ -298,7 +306,7 @@ export class KeyRingService {
    * @param {string} txMsg - borsh serialized transfer transaction
    * @param {string} msgId - id of a tx if originating from approval process
    * @throws {Error} - if unable to submit transfer
-   * @returns {Promise<void>} - resolves when transfer is successfull (resolves for failed VPs)
+   * @returns {Promise<void>} - resolves when transfer is successful (resolves for failed VPs)
    */
   async submitTransfer(
     transferMsg: string,
@@ -446,5 +454,12 @@ export class KeyRingService {
 
   async checkDurability(): Promise<boolean> {
     return await IndexedDBKVStore.durabilityCheck();
+  }
+
+  async signArbitrary(
+    signer: string,
+    data: string
+  ): Promise<SignatureResponse | undefined> {
+    return await this._keyRing.signArbitrary(signer, data);
   }
 }

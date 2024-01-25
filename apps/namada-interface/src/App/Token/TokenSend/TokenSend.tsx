@@ -1,28 +1,30 @@
+import BigNumber from "bignumber.js";
 import { useEffect, useState } from "react";
 
-import { Account, AccountsState } from "slices/accounts";
 import { TransferType } from "App/Token/types";
+import { Account, AccountsState } from "slices/accounts";
 import { useAppSelector } from "store";
 
-import { TokenType, Tokens } from "@namada/types";
 import {
   Heading,
   NavigationContainer,
-  Select,
   Option,
-  TabsGroup,
+  Select,
   Tab,
+  TabsGroup,
 } from "@namada/components";
-import TokenSendForm from "./TokenSendForm";
 import { useSanitizedParams } from "@namada/hooks";
-import { chains, defaultChainId as chainId } from "@namada/chains";
+import { Query } from "@namada/shared";
+import { Chain, TokenType, Tokens } from "@namada/types";
+import TokenSendForm from "./TokenSendForm";
+import { chains } from "@namada/chains";
 
 import { TokenSendContainer, TokenSendContent } from "./TokenSend.components";
 import {
-  PAYMENT_ADDRESS_LENGTH,
-  PAYMENT_ADDRESS_PREFIX,
   ESTABLISHED_ADDRESS_LENGTH,
   ESTABLISHED_ADDRESS_PREFIX,
+  PAYMENT_ADDRESS_LENGTH,
+  PAYMENT_ADDRESS_PREFIX,
 } from "./types";
 
 export const parseTarget = (target: string): TransferType | undefined => {
@@ -51,9 +53,10 @@ const accountsWithBalanceIntoSelectData = (
 ): Option<string>[] =>
   accountsWithBalance.flatMap(({ details, balance }) =>
     Object.entries(balance)
-      .filter(([tokenType, balance]) =>
-        !Tokens[tokenType as TokenType].isNut
-        && balance.isGreaterThan(0))
+      .filter(
+        ([tokenType, balance]) =>
+          !Tokens[tokenType as TokenType].isNut && balance.isGreaterThan(0)
+      )
       .map(([tokenType, amount]) => ({
         value: `${details.address}|${tokenType}`,
         label: `${details.alias} ${amount} (${tokenType})`,
@@ -62,9 +65,10 @@ const accountsWithBalanceIntoSelectData = (
 
 const TokenSend = (): JSX.Element => {
   const { derived } = useAppSelector<AccountsState>((state) => state.accounts);
+  const { rpc } = useAppSelector<Chain>((state) => state.chain.config);
   const { target } = useSanitizedParams<Params>();
 
-  const accounts = Object.values(derived[chainId]);
+  const accounts = Object.values(derived[chains.namada.id]);
 
   const shieldedAccountsWithBalance = accounts.filter(
     ({ details }) => details.isShielded
@@ -95,7 +99,7 @@ const TokenSend = (): JSX.Element => {
     setSelectedTransparentAccountAddress(
       transparentAccountsWithBalance?.[0]?.details.address
     );
-  }, [derived[chainId]]);
+  }, [derived[chains.namada.id]]);
 
   const tabs = ["Shielded", "Transparent"];
   let defaultTab = 0;
@@ -107,7 +111,7 @@ const TokenSend = (): JSX.Element => {
 
   const [activeTab, setActiveTab] = useState(tabs[defaultTab]);
   const [token, setToken] = useState<TokenType>(
-    chains[chainId].currency.symbol as TokenType
+    chains.namada.currency.symbol as TokenType
   );
 
   const handleTokenChange =
@@ -119,6 +123,23 @@ const TokenSend = (): JSX.Element => {
         selectAccountFn(accountId);
         setToken(tokenSymbol as TokenType);
       };
+
+  const [minimumGasPrice, setMinimumGasPrice] = useState<BigNumber>();
+
+  useEffect(() => {
+    (async () => {
+      const query = new Query(rpc);
+      const result = (await query.query_gas_costs()) as [string, string][];
+
+      const namCost = result.find(([token]) => token === Tokens.NAM.address);
+
+      if (!namCost) {
+        throw new Error("Error querying minimum gas price");
+      }
+
+      setMinimumGasPrice(new BigNumber(namCost[1]));
+    })();
+  }, []);
 
   return (
     <TokenSendContainer>
@@ -140,7 +161,7 @@ const TokenSend = (): JSX.Element => {
 
       {activeTab === "Shielded" && (
         <TokenSendContent>
-          {shieldedTokenData.length > 0 ? (
+          {shieldedTokenData.length > 0 && minimumGasPrice ? (
             <>
               <Select
                 data={shieldedTokenData}
@@ -155,6 +176,7 @@ const TokenSend = (): JSX.Element => {
                   defaultTarget={
                     target?.startsWith("znam") ? target : undefined
                   }
+                  minimumGasPrice={minimumGasPrice}
                 />
               )}
             </>
@@ -166,7 +188,7 @@ const TokenSend = (): JSX.Element => {
 
       {activeTab === "Transparent" && (
         <TokenSendContent>
-          {transparentTokenData.length > 0 ? (
+          {transparentTokenData.length > 0 && minimumGasPrice ? (
             <>
               <Select
                 data={transparentTokenData}
@@ -183,6 +205,7 @@ const TokenSend = (): JSX.Element => {
                   defaultTarget={
                     target?.startsWith("tnam") ? target : undefined
                   }
+                  minimumGasPrice={minimumGasPrice}
                 />
               )}
             </>

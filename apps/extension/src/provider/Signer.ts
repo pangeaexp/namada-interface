@@ -1,43 +1,45 @@
 import { toBase64 } from "@cosmjs/encoding";
+import { chains } from "@namada/chains";
+import { SupportedTx, TxType } from "@namada/shared";
 import {
   Account,
-  Namada,
+  AccountType,
+  BridgeTransferProps,
+  EthBridgeTransferMsgValue,
+  Signer as ISigner,
   IbcTransferMsgValue,
   IbcTransferProps,
   Message,
-  Signer as ISigner,
+  Namada,
+  Schema,
+  SignatureResponse,
+  SubmitBondMsgValue,
+  SubmitBondProps,
+  SubmitUnbondMsgValue,
+  SubmitUnbondProps,
+  SubmitVoteProposalMsgValue,
+  SubmitVoteProposalProps,
+  SubmitWithdrawMsgValue,
+  SubmitWithdrawProps,
   TransferMsgValue,
   TransferProps,
-  AccountType,
-  SubmitBondProps,
-  SubmitBondMsgValue,
-  SubmitUnbondProps,
-  SubmitUnbondMsgValue,
-  SubmitWithdrawProps,
-  SubmitWithdrawMsgValue,
-  BridgeTransferProps,
-  EthBridgeTransferMsgValue,
-  TxProps,
   TxMsgValue,
-  Schema,
-  SubmitVoteProposalProps,
-  SubmitVoteProposalMsgValue,
+  TxProps,
 } from "@namada/types";
-import { TxType, SupportedTx } from "@namada/shared";
-import { defaultChainId } from "@namada/chains";
 
 export class Signer implements ISigner {
-  constructor(private readonly _namada: Namada) {}
+  constructor(private readonly _namada: Namada) { }
 
   public async accounts(): Promise<Account[] | undefined> {
     return (await this._namada.accounts())?.map(
       ({ alias, address, type, publicKey }) => ({
         alias,
         address,
-        chainId: defaultChainId,
+        chainId: chains.namada.chainId,
         type,
         publicKey,
         isShielded: type === AccountType.ShieldedKeys,
+        chainKey: "namada",
       })
     );
   }
@@ -51,13 +53,22 @@ export class Signer implements ISigner {
       return {
         alias,
         address,
-        chainId: defaultChainId,
+        chainId: chains.namada.chainId,
         type,
         publicKey,
         isShielded: type === AccountType.ShieldedKeys,
+        chainKey: "namada",
       };
     }
   }
+
+  public async sign(
+    signer: string,
+    data: string
+  ): Promise<SignatureResponse | undefined> {
+    return await this._namada.sign({ signer, data });
+  }
+
   private async submitTx<T extends Schema, Args>(
     txType: SupportedTx,
     constructor: new (args: Args) => T,

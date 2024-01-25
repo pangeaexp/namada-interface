@@ -1,6 +1,6 @@
 import { deserialize } from "@dao-xyz/borsh";
 
-import { chains, defaultChainId } from "@namada/chains";
+import { chains } from "@namada/chains";
 import {
   HDWallet,
   Mnemonic,
@@ -24,6 +24,7 @@ import {
   DerivedAccount,
   EthBridgeTransferMsgValue,
   IbcTransferMsgValue,
+  SignatureResponse,
   SubmitBondMsgValue,
   SubmitUnbondMsgValue,
   SubmitVoteProposalMsgValue,
@@ -50,6 +51,7 @@ import {
   UtilityStore,
 } from "./types";
 
+import { toHex } from "@cosmjs/encoding";
 import { SdkService } from "background/sdk";
 import { VaultService } from "background/vault";
 import { generateId } from "utils";
@@ -69,7 +71,7 @@ type DerivedAccountInfo = {
 };
 
 /**
- * Keyring stores keys in persisted backround.
+ * Keyring stores keys in persisted background.
  */
 export class KeyRing {
   private _status: KeyRingStatus = KeyRingStatus.Empty;
@@ -189,7 +191,7 @@ export class KeyRing {
           const phrase = accountSecret.seedPhrase.join(" ");
           const mnemonic = Mnemonic.from_phrase(phrase);
           const seed = mnemonic.to_seed();
-          const { coinType } = chains[defaultChainId].bip44;
+          const { coinType } = chains.namada.bip44;
           const bip44Path = makeBip44PathArray(coinType, path);
           const hdWallet = new HDWallet(seed);
           const key = hdWallet.derive(new Uint32Array(bip44Path));
@@ -260,7 +262,7 @@ export class KeyRing {
     path: Bip44Path,
     parentId: string
   ): DerivedAccountInfo {
-    const { coinType } = chains[defaultChainId].bip44;
+    const { coinType } = chains.namada.bip44;
     const derivationPath = makeBip44PathArray(coinType, path);
     const hdWallet = new HDWallet(seed);
     const key = hdWallet.derive(new Uint32Array(derivationPath));
@@ -617,7 +619,7 @@ export class KeyRing {
       throw new Error(`Account for ${address} not found!`);
     }
     const { path } = accountStore;
-    const { coinType } = chains[defaultChainId].bip44;
+    const { coinType } = chains.namada.bip44;
     const bip44Path = makeBip44PathArray(coinType, path);
 
     const sensitiveProps =
@@ -625,21 +627,25 @@ export class KeyRing {
     if (!sensitiveProps) {
       throw new Error(`Signing key for ${address} not found!`);
     }
-    const { text: phrase } = sensitiveProps;
-    const mnemonic = Mnemonic.from_phrase(phrase);
-    const seed = mnemonic.to_seed();
-    const hdWallet = new HDWallet(seed);
-    const key = hdWallet.derive(new Uint32Array(bip44Path));
-    const privateKeyStringPtr = key.to_hex();
-    const privateKey = readStringPointer(
-      privateKeyStringPtr,
-      this.cryptoMemory
-    );
+    const { text: secret } = sensitiveProps;
 
-    mnemonic.free();
-    hdWallet.free();
-    key.free();
-    privateKeyStringPtr.free();
+    let privateKey: string;
+
+    if (account.public.type === AccountType.PrivateKey) {
+      privateKey = secret;
+    } else {
+      const mnemonic = Mnemonic.from_phrase(secret);
+      const seed = mnemonic.to_seed();
+      const hdWallet = new HDWallet(seed);
+      const key = hdWallet.derive(new Uint32Array(bip44Path));
+      const privateKeyStringPtr = key.to_hex();
+      privateKey = readStringPointer(privateKeyStringPtr, this.cryptoMemory);
+
+      mnemonic.free();
+      hdWallet.free();
+      key.free();
+      privateKeyStringPtr.free();
+    }
 
     return privateKey;
   }
@@ -879,5 +885,18 @@ export class KeyRing {
   async queryPublicKey(address: string): Promise<string | undefined> {
     const query = await this.sdkService.getQuery();
     return await query.query_public_key(address);
+  }
+
+  async signArbitrary(
+    signer: string,
+    data: string
+  ): Promise<SignatureResponse> {
+    await this.vaultService.assertIsUnlocked();
+
+    const key = await this.getSigningKey(signer);
+    const sdk = await this.sdkService.getSdk();
+    const [hash, signature] = await sdk.sign_arbitrary(key, data);
+
+    return { hash, signature: toHex(signature) };
   }
 }

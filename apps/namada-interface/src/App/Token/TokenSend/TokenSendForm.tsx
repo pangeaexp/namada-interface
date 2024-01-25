@@ -1,55 +1,27 @@
 import BigNumber from "bignumber.js";
-import { CSSProperties, useContext, useEffect, useState } from "react";
-import QrReader from "react-qr-reader";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ThemeContext } from "styled-components";
 
-import { defaultChainId } from "@namada/chains";
-import { AmountInput, ActionButton, Icon, Input } from "@namada/components";
+import { chains } from "@namada/chains";
+import { ActionButton, AmountInput, Icon, Input } from "@namada/components";
 import { getIntegration } from "@namada/integrations";
+import { Query } from "@namada/shared";
 import { Chain, Signer, TokenType, Tokens } from "@namada/types";
-import { ColorMode, DesignConfiguration } from "@namada/utils";
+import { mapUndefined } from "@namada/utils";
+
 import { TopLevelRoute } from "App/types";
 import { AccountsState } from "slices/accounts";
-import { CoinsState } from "slices/coins";
-import { SettingsState } from "slices/settings";
 import { useAppSelector } from "store";
 import { TransferType, TxTransferArgs } from "../types";
 import { parseTarget } from "./TokenSend";
 import {
   BackButton,
   ButtonsContainer,
-  GasButtonsContainer,
   InputContainer,
-  QrReaderContainer,
-  QrReaderError,
   TokenSendFormContainer,
 } from "./TokenSendForm.components";
 
-enum ComponentColor {
-  GasButtonBorder,
-  GasButtonBorderActive,
-}
-
-const getColor = (
-  color: ComponentColor,
-  theme: DesignConfiguration
-): string => {
-  const { colorMode } = theme.themeConfigurations;
-
-  const colorMap: Record<ColorMode, Record<ComponentColor, string>> = {
-    light: {
-      [ComponentColor.GasButtonBorder]: theme.colors.secondary.main,
-      [ComponentColor.GasButtonBorderActive]: theme.colors.secondary.main,
-    },
-    dark: {
-      [ComponentColor.GasButtonBorder]: theme.colors.primary.main,
-      [ComponentColor.GasButtonBorderActive]: theme.colors.primary.main,
-    },
-  };
-
-  return colorMap[colorMode][color];
-};
+const GAS_LIMIT = new BigNumber(20_000);
 
 export const submitTransferTransaction = async (
   txTransferArgs: TxTransferArgs
@@ -62,22 +34,29 @@ export const submitTransferTransaction = async (
     target,
     token,
     disposableSigningKey,
+    feeAmount,
+    gasLimit,
   } = txTransferArgs;
-  const integration = getIntegration(defaultChainId);
+
+  if (!feeAmount || !gasLimit) {
+    return;
+  }
+
+  const integration = getIntegration(chains.namada.id);
   const signer = integration.signer() as Signer;
 
   const transferArgs = {
     source: faucet || address,
     target,
-    token: Tokens[token].address || Tokens.NAM.address || "",
+    token: Tokens[token].address,
     amount,
-    nativeToken: Tokens.NAM.address || "",
+    nativeToken: Tokens.NAM.address,
   };
 
   const txArgs = {
     token: Tokens.NAM.address || "",
-    feeAmount: new BigNumber(0),
-    gasLimit: new BigNumber(20_000),
+    feeAmount,
+    gasLimit,
     chainId,
     publicKey: publicKey,
     signer: faucet ? target : undefined,
@@ -91,6 +70,7 @@ type Props = {
   address: string;
   defaultTarget?: string;
   tokenType: TokenType;
+  minimumGasPrice: BigNumber;
 };
 
 /**
@@ -124,10 +104,12 @@ const getIsFormInvalid = (
  * gives the description above submit button to make it move obvious for the user
  * that the transfer might be a shielding/unshielding transfer
  */
-const AccountSourceTargetDescription = (props: {
-  isShieldedSource: boolean;
-  isShieldedTarget: boolean;
-}): React.ReactElement => {
+const AccountSourceTargetDescription = (
+  props: {
+    isShieldedSource: boolean;
+    isShieldedTarget: boolean;
+  }
+): React.ReactElement => {
   const { isShieldedSource, isShieldedTarget } = props;
   const source = isShieldedSource ? <b>Shielded</b> : <b>Transparent</b>;
   const target = isShieldedTarget ? <b>Shielded</b> : <b>Transparent</b>;
@@ -142,39 +124,44 @@ const TokenSendForm = ({
   address,
   tokenType,
   defaultTarget,
+  minimumGasPrice,
 }: Props): JSX.Element => {
   const navigate = useNavigate();
-  const themeContext = useContext(ThemeContext);
   const chain = useAppSelector<Chain>((state) => state.chain.config);
   const [target, setTarget] = useState<string | undefined>(defaultTarget);
   const [amount, setAmount] = useState<BigNumber | undefined>(new BigNumber(0));
 
   const [isTargetValid, setIsTargetValid] = useState(true);
   const [isShieldedTarget, setIsShieldedTarget] = useState(false);
-  const [showQrReader, setShowQrReader] = useState(false);
-  const [qrCodeError, setQrCodeError] = useState<string>();
 
-  // TODO: This will likely be calculated per token, as any one of these numbers
-  // will be difference for each token specified:
-  enum GasFee {
-    "Low" = "0.0001",
-    "Medium" = "0.0005",
-    "High" = "0.001",
-  }
+  const [isRevealPkNeeded, setIsRevealPkNeeded] = useState<
+    boolean | undefined
+  >();
 
-  const [gasFee, setGasFee] = useState<GasFee>(GasFee.Medium);
+  // TODO: Expecting that these could be set by the user in the future
+  const gasPrice = minimumGasPrice;
+  const gasLimit = GAS_LIMIT;
 
-  const { fiatCurrency } = useAppSelector<SettingsState>(
-    (state) => state.settings
+  const singleTransferFee = gasPrice.multipliedBy(gasLimit);
+
+  const totalGasFee = mapUndefined(
+    (needed) =>
+      needed ? singleTransferFee.multipliedBy(2) : singleTransferFee,
+    isRevealPkNeeded
   );
-  const { rates } = useAppSelector<CoinsState>((state) => state.coins);
+
   const { derived } = useAppSelector<AccountsState>((state) => state.accounts);
-  const derivedAccounts = derived[defaultChainId];
+  const derivedAccounts = derived[chains.namada.id];
 
   const { details, balance } = derivedAccounts[address];
   const isShieldedSource = details.isShielded;
 
   const token = Tokens[tokenType];
+
+  const availableBalance = mapUndefined(
+    (fee) => balance[tokenType]?.minus(fee),
+    totalGasFee
+  );
 
   const isFormInvalid = getIsFormInvalid(
     target,
@@ -194,30 +181,6 @@ const TokenSendForm = ({
 
   const handleFocus = (e: React.ChangeEvent<HTMLInputElement>): void =>
     e.target.select();
-
-  const getFiatForCurrency = (feeString: string): BigNumber => {
-    const fee = new BigNumber(feeString);
-    const rate =
-      rates[tokenType] && rates[tokenType][fiatCurrency]
-        ? rates[tokenType][fiatCurrency].rate
-        : 1;
-    return fee.multipliedBy(rate).decimalPlaces(5);
-  };
-
-  const gasFees = {
-    [GasFee.Low]: {
-      fee: GasFee.Low,
-      fiat: getFiatForCurrency(GasFee.Low),
-    },
-    [GasFee.Medium]: {
-      fee: GasFee.Medium,
-      fiat: getFiatForCurrency(GasFee.Medium),
-    },
-    [GasFee.High]: {
-      fee: GasFee.High,
-      fiat: getFiatForCurrency(GasFee.High),
-    },
-  };
 
   useEffect(() => {
     // Validate target address
@@ -246,8 +209,23 @@ const TokenSendForm = ({
     })();
   }, [target]);
 
+  useEffect(() => {
+    (async () => {
+      setIsRevealPkNeeded(undefined);
+
+      if (isShieldedSource) {
+        setIsRevealPkNeeded(false);
+      } else {
+        const query = new Query(chain.rpc);
+        const result = await query.query_public_key(address);
+
+        setIsRevealPkNeeded(!result);
+      }
+    })();
+  }, [address]);
+
   const handleOnSendClick = (): void => {
-    if (!amount || amount.isNaN()) {
+    if (!amount || amount.isNaN() || totalGasFee === undefined) {
       return;
     }
 
@@ -258,26 +236,15 @@ const TokenSendForm = ({
         target,
         amount,
         token: tokenType,
-        feeAmount: new BigNumber(gasFee),
+        feeAmount: gasPrice,
+        gasLimit,
         disposableSigningKey: isShieldedSource,
       });
     }
   };
 
-  const handleOnScan = (data: string | null): void => {
-    if (data && data.match(/\/token\/send/)) {
-      const parts = data.split("/");
-      const target = parts.pop();
-      const token = parts.pop();
-
-      if (token !== tokenType) {
-        setQrCodeError("Invalid token for target address!");
-        return;
-      }
-      setQrCodeError(undefined);
-      setTarget(target);
-      setShowQrReader(false);
-    }
+  const handleMaxButtonClick = (): void => {
+    setAmount(availableBalance);
   };
 
   // if the transfer target is not TransferType.Shielded we perform the validation logic
@@ -287,31 +254,18 @@ const TokenSendForm = ({
     transferAmount: BigNumber,
     targetAddress: string | undefined
   ): string | undefined => {
-    const balance = derivedAccounts[address].balance[token] || 0;
-
     const transferTypeBasedOnTarget =
       targetAddress && parseTarget(targetAddress);
 
     if (transferTypeBasedOnTarget === TransferType.Shielded) {
       return undefined;
     }
-    return transferAmount.isLessThanOrEqualTo(balance)
+    if (!availableBalance) {
+      return "Invalid";
+    }
+    return transferAmount.isLessThanOrEqualTo(availableBalance)
       ? undefined
       : "Invalid amount!";
-  };
-
-  // these are passed to button for the custom gas fee buttons
-  const gasFeeButtonActiveStyleOverride: CSSProperties = {
-    backgroundColor: themeContext.colors.utility1.main60,
-    color: themeContext.colors.utility2.main,
-    border: `solid 1px ${getColor(
-      ComponentColor.GasButtonBorderActive,
-      themeContext
-    )}`,
-  };
-  const gasFeeButtonStyleOverride: CSSProperties = {
-    backgroundColor: themeContext.colors.utility1.main70,
-    color: themeContext.colors.utility2.main80,
   };
 
   return (
@@ -327,16 +281,6 @@ const TokenSendForm = ({
             value={target}
             error={isTargetValid ? undefined : "Target is invalid"}
           />
-
-          {showQrReader && (
-            <QrReaderContainer>
-              {qrCodeError && <QrReaderError>{qrCodeError}</QrReaderError>}
-              <QrReader
-                onScan={handleOnScan}
-                onError={(e: string) => setQrCodeError(e)}
-              />
-            </QrReaderContainer>
-          )}
         </InputContainer>
         <InputContainer>
           <AmountInput
@@ -347,63 +291,16 @@ const TokenSendForm = ({
             onFocus={handleFocus}
             error={amount && isAmountValid(address, tokenType, amount, target)}
           />
+          <ActionButton
+            disabled={isRevealPkNeeded === undefined}
+            onClick={handleMaxButtonClick}
+          >
+            Max
+          </ActionButton>
         </InputContainer>
         <InputContainer>{accountSourceTargetDescription}</InputContainer>
 
-        <GasButtonsContainer>
-          <ActionButton
-            outlined
-            onClick={() => setGasFee(GasFee.Low)}
-            style={
-              gasFee === GasFee.Low
-                ? gasFeeButtonActiveStyleOverride
-                : gasFeeButtonStyleOverride
-            }
-            className={gasFee === GasFee.Low ? "active" : ""}
-          >
-            <p>
-              <span>Low</span>
-              <br />
-              &lt; {gasFees[GasFee.Low].fee} {tokenType}
-              <br />
-              &lt; {gasFees[GasFee.Low].fiat.toString()} {fiatCurrency}
-            </p>
-          </ActionButton>
-          <ActionButton
-            outlined
-            onClick={() => setGasFee(GasFee.Medium)}
-            style={
-              gasFee === GasFee.Medium
-                ? gasFeeButtonActiveStyleOverride
-                : gasFeeButtonStyleOverride
-            }
-          >
-            <p>
-              <span>Medium</span>
-              <br />
-              &lt; {gasFees[GasFee.Medium].fee} {tokenType}
-              <br />
-              &lt; {gasFees[GasFee.Medium].fiat.toString()} {fiatCurrency}
-            </p>
-          </ActionButton>
-          <ActionButton
-            outlined
-            onClick={() => setGasFee(GasFee.High)}
-            style={
-              gasFee === GasFee.High
-                ? gasFeeButtonActiveStyleOverride
-                : gasFeeButtonStyleOverride
-            }
-          >
-            <p>
-              <span>High</span>
-              <br />
-              &lt; {gasFees[GasFee.High].fee} {tokenType}
-              <br />
-              &lt; {gasFees[GasFee.High].fiat.toString()} {fiatCurrency}
-            </p>
-          </ActionButton>
-        </GasButtonsContainer>
+        <p>Gas fee: {totalGasFee?.toString()} NAM</p>
       </TokenSendFormContainer>
 
       <ButtonsContainer>
