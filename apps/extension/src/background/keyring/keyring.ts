@@ -6,6 +6,7 @@ import {
   Mnemonic,
   PhraseSize,
   ShieldedHDWallet,
+  StringPointer,
   VecU8Pointer,
   readStringPointer,
   readVecStringPointer,
@@ -51,7 +52,6 @@ import {
   UtilityStore,
 } from "./types";
 
-import { toHex } from "@cosmjs/encoding";
 import { SdkService } from "background/sdk";
 import { VaultService } from "background/vault";
 import { generateId } from "utils";
@@ -82,7 +82,7 @@ export class KeyRing {
     protected readonly utilityStore: KVStore<UtilityStore>,
     protected readonly extensionStore: KVStore<number>,
     protected readonly cryptoMemory: WebAssembly.Memory
-  ) { }
+  ) {}
 
   public get status(): KeyRingStatus {
     return this._status;
@@ -144,7 +144,7 @@ export class KeyRing {
     await this.vaultService.add<AccountStore, SensitiveAccountStoreData>(
       KEYSTORE_KEY,
       accountStore,
-      { text: "" }
+      { text: "", passphrase: "" }
     );
 
     await this.setActiveAccount(id, AccountType.Ledger);
@@ -181,16 +181,18 @@ export class KeyRing {
 
     const path = { account: 0, change: 0, index: 0 };
 
-    const { sk, text, accountType } = ((): {
+    const { sk, text, passphrase, accountType } = ((): {
       sk: string;
       text: string;
+      passphrase: string;
       accountType: AccountType;
     } => {
       switch (accountSecret.t) {
         case "Mnemonic":
           const phrase = accountSecret.seedPhrase.join(" ");
           const mnemonic = Mnemonic.from_phrase(phrase);
-          const seed = mnemonic.to_seed();
+          const passphrase = new StringPointer(accountSecret.passphrase);
+          const seed = mnemonic.to_seed(passphrase);
           const { coinType } = chains.namada.bip44;
           const bip44Path = makeBip44PathArray(coinType, path);
           const hdWallet = new HDWallet(seed);
@@ -203,7 +205,12 @@ export class KeyRing {
           key.free();
           privateKeyStringPtr.free();
 
-          return { sk, text: phrase, accountType: AccountType.Mnemonic };
+          return {
+            sk,
+            text: phrase,
+            passphrase: accountSecret.passphrase,
+            accountType: AccountType.Mnemonic,
+          };
 
         case "PrivateKey":
           const { privateKey } = accountSecret;
@@ -211,6 +218,7 @@ export class KeyRing {
           return {
             sk: privateKey,
             text: privateKey,
+            passphrase: "",
             accountType: AccountType.PrivateKey,
           };
 
@@ -247,7 +255,7 @@ export class KeyRing {
       publicKey,
       type: accountType,
     };
-    const sensitiveData: SensitiveAccountStoreData = { text };
+    const sensitiveData: SensitiveAccountStoreData = { text, passphrase };
     await this.vaultService.add<AccountStore, SensitiveAccountStoreData>(
       KEYSTORE_KEY,
       accountStore,
@@ -451,8 +459,14 @@ export class KeyRing {
         );
       }
 
-      const mnemonic = Mnemonic.from_phrase(sensitiveData.text);
-      const seed = mnemonic.to_seed();
+      const { text, passphrase } = sensitiveData;
+
+      const mnemonic = Mnemonic.from_phrase(text);
+      const passphrasePtr = passphrase
+        ? new StringPointer(passphrase)
+        : undefined;
+
+      const seed = mnemonic.to_seed(passphrasePtr);
       mnemonic.free();
       return { parentId, seed };
     } catch (e) {
@@ -481,7 +495,7 @@ export class KeyRing {
     this.vaultService.add<AccountStore, SensitiveAccountStoreData>(
       KEYSTORE_KEY,
       { ...account, owner },
-      { text }
+      { text, passphrase: "" }
     );
     return account;
   }
@@ -627,7 +641,7 @@ export class KeyRing {
     if (!sensitiveProps) {
       throw new Error(`Signing key for ${address} not found!`);
     }
-    const { text: secret } = sensitiveProps;
+    const { text: secret, passphrase } = sensitiveProps;
 
     let privateKey: string;
 
@@ -635,7 +649,12 @@ export class KeyRing {
       privateKey = secret;
     } else {
       const mnemonic = Mnemonic.from_phrase(secret);
-      const seed = mnemonic.to_seed();
+      const passphrasePtr =
+        typeof passphrase === "string"
+          ? new StringPointer(passphrase)
+          : undefined;
+
+      const seed = mnemonic.to_seed(passphrasePtr);
       const hdWallet = new HDWallet(seed);
       const key = hdWallet.derive(new Uint32Array(bip44Path));
       const privateKeyStringPtr = key.to_hex();
@@ -895,8 +914,8 @@ export class KeyRing {
 
     const key = await this.getSigningKey(signer);
     const sdk = await this.sdkService.getSdk();
-    const [hash, signature] = await sdk.sign_arbitrary(key, data);
+    const [hash, signature] = sdk.sign_arbitrary(key, data);
 
-    return { hash, signature: toHex(signature) };
+    return { hash, signature };
   }
 }
