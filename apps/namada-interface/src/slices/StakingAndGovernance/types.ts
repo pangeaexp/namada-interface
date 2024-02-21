@@ -63,7 +63,6 @@ export type MyValidators = Unique & {
 export type MyBalanceEntry = Unique & {
   key: string;
   baseCurrency: string;
-  fiatCurrency: string;
 };
 
 // PLACEHOLDER
@@ -84,6 +83,8 @@ export type ChangeInStakingPosition = {
   owner: string;
   amount: BigNumber;
   memo?: string;
+  gasPrice: BigNumber;
+  gasLimit: BigNumber;
 };
 
 export type StakingAndGovernanceState = {
