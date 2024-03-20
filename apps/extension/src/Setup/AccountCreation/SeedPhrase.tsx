@@ -35,7 +35,7 @@ export const SeedPhrase: React.FC<Props> = (props) => {
       );
       setSeedPhrase(words);
     };
-    setPhrase();
+    void setPhrase();
   }, [mnemonicLength]);
 
   return (
@@ -57,6 +57,7 @@ export const SeedPhrase: React.FC<Props> = (props) => {
             words={seedPhrase}
           />
           <FeedbackButton
+            data-testid="setup-copy-to-clipboard-button"
             className="text-center mx-auto block"
             successMessage="Copied to clipboard"
             errorMessage="Error trying to copy"
