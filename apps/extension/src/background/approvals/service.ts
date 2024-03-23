@@ -8,15 +8,15 @@ import { SupportedTx, TxType } from "@namada/shared";
 import { KVStore } from "@namada/storage";
 import {
   AccountType,
+  BondMsgValue,
   EthBridgeTransferMsgValue,
   IbcTransferMsgValue,
   SignatureResponse,
-  SubmitBondMsgValue,
-  SubmitUnbondMsgValue,
-  SubmitVoteProposalMsgValue,
-  SubmitWithdrawMsgValue,
   TransferMsgValue,
   TxMsgValue,
+  UnbondMsgValue,
+  VoteProposalMsgValue,
+  WithdrawMsgValue,
 } from "@namada/types";
 
 import { assertNever, paramsToUrl } from "@namada/utils";
@@ -176,7 +176,7 @@ export class ApprovalsService {
     } = specificDetails;
     const amount = new BigNumber(amountBN.toString());
 
-    const { publicKey = "", token: nativeToken } = txDetails;
+    const { publicKey, nativeToken } = ApprovalsService.getTxDetails(txDetails);
 
     return {
       source,
@@ -199,7 +199,7 @@ export class ApprovalsService {
     } = specificDetails;
     const amount = new BigNumber(amountBN.toString());
 
-    const { publicKey = "", token: nativeToken } = txDetails;
+    const { publicKey, nativeToken } = ApprovalsService.getTxDetails(txDetails);
 
     return {
       source,
@@ -221,7 +221,7 @@ export class ApprovalsService {
       amount,
     } = specificDetails;
 
-    const { publicKey = "", token: nativeToken } = txDetails;
+    const { publicKey, nativeToken } = ApprovalsService.getTxDetails(txDetails);
 
     return {
       source,
@@ -234,7 +234,7 @@ export class ApprovalsService {
   };
 
   static getParamsBond: GetParams = (specificMsg, txDetails) => {
-    const specificDetails = deserialize(specificMsg, SubmitBondMsgValue);
+    const specificDetails = deserialize(specificMsg, BondMsgValue);
 
     const {
       source,
@@ -243,7 +243,7 @@ export class ApprovalsService {
     } = specificDetails;
     const amount = new BigNumber(amountBN.toString());
 
-    const { publicKey = "" } = txDetails;
+    const { publicKey } = ApprovalsService.getTxDetails(txDetails);
 
     return {
       source,
@@ -255,12 +255,12 @@ export class ApprovalsService {
   };
 
   static getParamsUnbond: GetParams = (specificMsg, txDetails) => {
-    const specificDetails = deserialize(specificMsg, SubmitUnbondMsgValue);
+    const specificDetails = deserialize(specificMsg, UnbondMsgValue);
 
     const { source, amount: amountBN } = specificDetails;
     const amount = new BigNumber(amountBN.toString());
 
-    const { publicKey = "", token: nativeToken } = txDetails;
+    const { publicKey, nativeToken } = ApprovalsService.getTxDetails(txDetails);
 
     return {
       source,
@@ -271,11 +271,11 @@ export class ApprovalsService {
   };
 
   static getParamsWithdraw: GetParams = (specificMsg, txDetails) => {
-    const specificDetails = deserialize(specificMsg, SubmitWithdrawMsgValue);
+    const specificDetails = deserialize(specificMsg, WithdrawMsgValue);
 
     const { source, validator } = specificDetails;
 
-    const { publicKey = "", token: nativeToken } = txDetails;
+    const { publicKey, nativeToken } = ApprovalsService.getTxDetails(txDetails);
 
     return {
       source,
@@ -286,14 +286,11 @@ export class ApprovalsService {
   };
 
   static getParamsVoteProposal: GetParams = (specificMsg, txDetails) => {
-    const specificDetails = deserialize(
-      specificMsg,
-      SubmitVoteProposalMsgValue
-    );
+    const specificDetails = deserialize(specificMsg, VoteProposalMsgValue);
 
     const { signer } = specificDetails;
 
-    const { publicKey = "", token: nativeToken } = txDetails;
+    const { publicKey, nativeToken } = ApprovalsService.getTxDetails(txDetails);
 
     //TODO: check this
     return {
@@ -364,8 +361,7 @@ export class ApprovalsService {
     const alreadyApproved = await this.isConnectionApproved(interfaceOrigin);
 
     if (!alreadyApproved) {
-      const approvalWindow = await this._launchApprovalWindow(url);
-      const popupTabId = approvalWindow.tabs?.[0]?.id;
+      const popupTabId = await this.getPopupTabId(url);
 
       if (!popupTabId) {
         throw new Error("no popup tab ID");
@@ -432,8 +428,16 @@ export class ApprovalsService {
 
   private getPopupTabId = async (url: string): Promise<number | undefined> => {
     const window = await this._launchApprovalWindow(url);
-    const popupTabId = window.tabs?.[0]?.id;
+    const firstTab = window.tabs?.[0];
+    const popupTabId = firstTab?.id;
 
     return popupTabId;
+  };
+
+  private static getTxDetails = (
+    txDetails: TxMsgValue
+  ): { publicKey: string; nativeToken: string } => {
+    const { publicKey = "", token: nativeToken } = txDetails;
+    return { publicKey, nativeToken };
   };
 }
