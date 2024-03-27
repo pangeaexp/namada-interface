@@ -1,10 +1,13 @@
 import { Coin } from "@cosmjs/launchpad";
-import { AccountData, coin, coins } from "@cosmjs/proto-signing";
+import { coin, coins } from "@cosmjs/proto-signing";
 import {
+  QueryClient,
   SigningStargateClient,
   SigningStargateClientOptions,
   StargateClient,
+  setupIbcExtension,
 } from "@cosmjs/stargate";
+import { Tendermint34Client } from "@cosmjs/tendermint-rpc";
 import {
   Keplr as IKeplr,
   Window as KeplrWindow,
@@ -17,14 +20,11 @@ import {
   Account,
   AccountType,
   Chain,
-  CosmosMinDenom,
   CosmosTokenType,
-  TokenBalance,
-  TokenType,
-  minDenomByToken,
+  CosmosTokens,
+  TokenBalances,
   tokenByMinDenom,
 } from "@namada/types";
-import { shortenAddress } from "@namada/utils";
 import { BridgeProps, Integration } from "./types/Integration";
 
 const KEPLR_NOT_FOUND = "Keplr extension not found!";
@@ -38,7 +38,7 @@ export const defaultSigningClientOptions: SigningStargateClientOptions = {
   broadcastTimeoutMs: 8_000,
 };
 
-class Keplr implements Integration<Account, OfflineSigner> {
+class Keplr implements Integration<Account, OfflineSigner, CosmosTokenType> {
   private _keplr: IKeplr | undefined;
   private _offlineSigner: OfflineSigner | undefined;
   /**
@@ -123,19 +123,35 @@ class Keplr implements Integration<Account, OfflineSigner> {
    */
   public async accounts(): Promise<readonly Account[] | undefined> {
     if (this._keplr) {
-      const client = this.signer();
-      const accounts = await client?.getAccounts();
+      // TODO: get accounts for multiple chains
+      const chainIds = [this.chain.chainId];
 
-      return accounts?.map(
-        (account: AccountData): Account => ({
-          alias: shortenAddress(account.address, 16),
-          chainId: this.chain.chainId,
-          address: account.address,
-          type: AccountType.PrivateKey,
-          isShielded: false,
-          chainKey: this.chain.id,
+      const keysSettled = await Promise.allSettled(
+        chainIds.map(async (chainId) => {
+          const key = await this._keplr!.getKey(chainId);
+          return { chainId, key };
         })
       );
+      // getKey rejects Promise for unknown chains, so filter rejected promises
+      const accounts = keysSettled.reduce<{ chainId: string; key: Key }[]>(
+        (acc, current) => {
+          if (current.status === "fulfilled") {
+            return [...acc, current.value];
+          } else {
+            return acc;
+          }
+        },
+        []
+      );
+
+      return accounts.map(({ chainId, key }) => ({
+        alias: key.name,
+        chainId: chainId,
+        address: key.bech32Address,
+        type: AccountType.PrivateKey,
+        isShielded: false,
+        chainKey: this.chain.id,
+      }));
     }
     return Promise.reject(KEPLR_NOT_FOUND);
   }
@@ -156,7 +172,8 @@ class Keplr implements Integration<Account, OfflineSigner> {
       } = props.ibcProps;
       const { feeAmount } = props.txProps;
 
-      const minDenom = minDenomByToken(token as CosmosTokenType);
+      // TODO: shouldn't need to cast here
+      const minDenom = CosmosTokens[token as CosmosTokenType].minDenom;
       const client = await SigningStargateClient.connectWithSigner(
         this.chain.rpc,
         this.signer(),
@@ -200,30 +217,61 @@ class Keplr implements Integration<Account, OfflineSigner> {
     return Promise.reject("Invalid bridge props!");
   }
 
-  public async queryBalances(owner: string): Promise<TokenBalance[]> {
+  public async queryBalances(
+    owner: string
+  ): Promise<TokenBalances<CosmosTokenType>> {
     const client = await StargateClient.connect(this.chain.rpc);
-    const balances = (await client.getAllBalances(owner)) || [];
+    const queryResult = (await client.getAllBalances(owner)) || [];
 
-    // TODO: Remove filter once we can handle IBC tokens properly
-    return balances
-      .filter((balance) => balance.denom === "uatom")
-      .map((coin: Coin) => {
-        const token = tokenByMinDenom(
-          coin.denom as CosmosMinDenom
-        ) as TokenType;
-        const amount = new BigNumber(coin.amount);
-        return {
-          token,
-          amount: (coin.denom === "uatom"
-            ? amount.dividedBy(1_000_000)
-            : amount
-          ).toString(),
-        };
-      });
+    const balances: TokenBalances<CosmosTokenType> = {};
+
+    await Promise.all(
+      queryResult.map(async (coin: Coin) => {
+        let denom = coin.denom;
+        if (denom.startsWith("ibc/")) {
+          denom = await this.ibcAddressToDenom(denom);
+        }
+
+        const token = tokenByMinDenom(denom);
+        if (typeof token === "undefined") {
+          return; // ignore unknown tokens
+        }
+
+        const amountInMinDenom = new BigNumber(coin.amount);
+        if (amountInMinDenom.isNaN()) {
+          throw new Error("invalid amount string received");
+        }
+        const decimals = CosmosTokens[token].decimals;
+        const amount = amountInMinDenom.dividedBy(10 ** decimals);
+
+        if (token in balances) {
+          throw new Error("duplicate entries in balances");
+        }
+        balances[token] = amount;
+      })
+    );
+
+    return balances;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   public async sync(): Promise<void> {}
+
+  private async ibcAddressToDenom(address: string): Promise<string> {
+    const tmClient = await Tendermint34Client.connect(this.chain.rpc);
+    const queryClient = new QueryClient(tmClient);
+    const ibcExtension = setupIbcExtension(queryClient);
+
+    const ibcHash = address.replace("ibc/", "");
+    const { denomTrace } = await ibcExtension.ibc.transfer.denomTrace(ibcHash);
+    const baseDenom = denomTrace?.baseDenom;
+
+    if (typeof baseDenom === "undefined") {
+      throw new Error("couldn't get denom from ibc address");
+    }
+
+    return baseDenom;
+  }
 }
 
 export default Keplr;

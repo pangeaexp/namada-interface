@@ -3,8 +3,14 @@ import BigNumber from "bignumber.js";
 import { atom } from "jotai";
 
 import { chains } from "@namada/chains";
-import { getIntegration, Integration } from "@namada/integrations";
-import { Account as AccountDetails, ChainKey, TokenType } from "@namada/types";
+import { getIntegration, Namada } from "@namada/integrations";
+import {
+  Account as AccountDetails,
+  ChainKey,
+  CosmosTokenType,
+  TokenBalances,
+  TokenType,
+} from "@namada/types";
 
 import { chainAtom } from "slices/chain";
 import { RootState } from "store";
@@ -53,6 +59,8 @@ export const fetchBalances = createAsyncThunk<void, void, { state: RootState }>(
   }
 );
 
+// TODO: fetchBalance is broken for integrations other than Namada. This
+// function should be removed and new code should use the jotai atoms instead.
 export const fetchBalance = createAsyncThunk<
   {
     chainKey: ChainKey;
@@ -68,14 +76,13 @@ export const fetchBalance = createAsyncThunk<
     const {
       currency: { address: nativeToken },
     } = thunkApi.getState().chain.config;
+    if (chainKey !== "namada") {
+      throw new Error("not namada");
+    }
     const integration = getIntegration(chainKey);
-    const results = await integration.queryBalances(address, [
+    const balance = await integration.queryBalances(address, [
       nativeToken || tokenAddress,
     ]);
-    const balance = results.reduce(
-      (acc, curr) => ({ ...acc, [curr.token]: new BigNumber(curr.amount) }),
-      {} as Balance
-    );
 
     return { chainKey, address, balance };
   }
@@ -179,7 +186,7 @@ const accountsAtom = (() => {
 })();
 
 const balancesAtom = (() => {
-  const base = atom<Record<Address, Balance>>({});
+  const base = atom<{ [address: Address]: TokenBalances }>({});
 
   return atom(
     (get) => get(base),
@@ -194,27 +201,34 @@ const balancesAtom = (() => {
       set(base, {});
 
       // Split accounts into transparent and shielded
-      const [transparentAccounts, shieldedAccounts] = accounts.reduce((acc, curr) => {
-        if (curr.isShielded) {
-          acc[1].push(curr)
-        } else {
-          acc[0].push(curr)
-        }
-        return acc;
-      }, [[], []] as [AccountDetails[], AccountDetails[]]);
+      const [transparentAccounts, shieldedAccounts] = accounts.reduce(
+        (acc, curr) => {
+          if (curr.isShielded) {
+            acc[1].push(curr);
+          } else {
+            acc[0].push(curr);
+          }
+          return acc;
+        },
+        [[], []] as [AccountDetails[], AccountDetails[]]
+      );
 
       const token = nativeToken || tokenAddress;
 
       // We query the balances for the transparent accounts first as it's faster
-      const transparentBalances = await Promise.all(queryBalance(namada, transparentAccounts, token));
-      transparentBalances.forEach(([address, balance ]) => {
+      const transparentBalances = await Promise.all(
+        queryBalance(namada, transparentAccounts, token)
+      );
+      transparentBalances.forEach(([address, balance]) => {
         set(base, { ...get(base), [address]: balance });
       });
 
       await namada.sync();
 
-      const shieldedBalances = await Promise.all(queryBalance(namada, shieldedAccounts, token));
-      shieldedBalances.forEach(([address, balance ]) => {
+      const shieldedBalances = await Promise.all(
+        queryBalance(namada, shieldedAccounts, token)
+      );
+      shieldedBalances.forEach(([address, balance]) => {
         set(base, { ...get(base), [address]: balance });
       });
     }
@@ -222,20 +236,66 @@ const balancesAtom = (() => {
 })();
 
 const queryBalance = (
-  int: InstanceType<Integration>,
+  namada: Namada,
   accounts: AccountDetails[],
-  token: string,
-): Promise<readonly [string, Balance]>[] => {
-  return accounts.map(async (account) => {
-    const result = await int.queryBalances(account.address, [token]);
-    return [
-      account.address,
-      result.reduce(
-        (acc, curr) => ({ ...acc, [curr.token]: new BigNumber(curr.amount) }),
-        {} as Balance,
-      ),
-    ] as const;
+  token: string
+): Promise<[string, TokenBalances]>[] => {
+  return accounts.map(async (account): Promise<[string, TokenBalances]> => {
+    const balances = await namada.queryBalances(account.address, [token]);
+    return [account.address, balances];
   });
 };
 
-export { accountsAtom, balancesAtom };
+const keplrAccountsAtom = (() => {
+  const base = atom(new Promise<readonly AccountDetails[]>(() => {}));
+
+  return atom(
+    (get) => get(base),
+    (_get, set) =>
+      set(
+        base,
+        (async () => {
+          const keplr = getIntegration("cosmos");
+          const accounts = await keplr.accounts();
+
+          if (typeof accounts === "undefined") {
+            throw new Error("Keplr accounts was undefined");
+          }
+
+          return accounts;
+        })()
+      )
+  );
+})();
+
+const keplrBalancesAtom = (() => {
+  const base = atom(new Promise<TokenBalances<CosmosTokenType>>(() => {}));
+
+  return atom(
+    (get) => get(base),
+    (get, set) =>
+      set(
+        base,
+        (async () => {
+          const accounts = await get(keplrAccountsAtom);
+          const keplr = getIntegration("cosmos");
+          const supportedChainId = keplr.chain.chainId;
+
+          // TODO: support querying balances for multiple chains
+          const supportedAccount = accounts.find(
+            ({ chainId }) => chainId === supportedChainId
+          );
+
+          if (typeof supportedAccount === "undefined") {
+            throw new Error(
+              `no Keplr account for chain ID ${supportedChainId}`
+            );
+          }
+
+          return await keplr.queryBalances(supportedAccount.address);
+        })()
+      )
+  );
+})();
+
+export { accountsAtom, balancesAtom, keplrAccountsAtom, keplrBalancesAtom };
